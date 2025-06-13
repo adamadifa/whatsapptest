@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Queue Monitoring</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+  <div class="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
+    <h1 class="text-2xl font-bold text-green-600 mb-4 text-center">WhatsApp Queue Monitoring</h1>
+    <div id="queue-status" class="text-center mb-6">
+      <div class="text-lg">Loading...</div>
+    </div>
+    <button id="refreshBtn" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded w-full">Refresh Manual</button>
+  </div>
+  <script>
+    async function fetchQueueStatus() {
+      const statusDiv = document.getElementById('queue-status');
+      statusDiv.innerHTML = '<div class="text-lg">Loading...</div>';
+      try {
+        const res = await fetch('/queue/status');
+        const data = await res.json();
+        statusDiv.innerHTML = `
+          <div class="mb-2">
+            <span class="font-semibold">Antrian:</span> <span class="text-blue-600 text-xl">${data.queue_length}</span>
+          </div>
+          <div class="mb-2">
+            <span class="font-semibold">Rate Limit:</span> <span class="">${data.rate_limit_per_min} pesan/menit</span>
+          </div>
+          <div class="mb-2">
+            <span class="font-semibold">Estimasi Delay:</span> <span class="">${data.est_delay_sec} detik</span>
+          </div>
+          <div class="mt-4">
+            <div class="font-semibold mb-1">Sedang Diproses:</div>
+            ${data.in_flight ? `
+              <div class="bg-yellow-50 border border-yellow-200 rounded p-2 mb-2">
+                <div><span class="font-semibold">Nomor Tujuan:</span> <span class="font-mono">${data.in_flight.jid}</span></div>
+                <div><span class="font-semibold">Isi Pesan:</span> <span class="font-mono">${data.in_flight.text}</span></div>
+                <div><span class="font-semibold">Waktu Mulai Proses:</span> <span class="font-mono">${new Date(data.in_flight.started_at).toLocaleTimeString()}</span></div>
+                <div class="text-xs text-yellow-600">Sedang dikirim...</div>
+              </div>
+            ` : `<div class="text-gray-400 italic">Tidak ada pesan yang sedang diproses</div>`}
+          </div>
+          <div class="mt-6">
+            <div class="font-semibold mb-1">Detail Antrian:</div>
+            <table class="min-w-full text-sm border border-gray-300 rounded">
+              <thead>
+                <tr class="bg-gray-100">
+                  <th class="px-2 py-1 border-b text-left">Nomor Tujuan (JID)</th>
+                  <th class="px-2 py-1 border-b text-left">Isi Pesan</th>
+                  <th class="px-2 py-1 border-b text-left">Waktu Masuk</th>
+                  <th class="px-2 py-1 border-b text-left">Countdown</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.queue_details && data.queue_details.length > 0 ? data.queue_details.map(
+                  (item, idx) => `<tr><td class="px-2 py-1 border-b">${item.jid}</td><td class="px-2 py-1 border-b">${item.text || '-'}</td><td class="px-2 py-1 border-b">${new Date(item.enqueued_at).toLocaleTimeString()}</td><td class="px-2 py-1 border-b"><span class="countdown" data-idx="${idx}"></span></td></tr>`
+                ).join('') : `<tr><td colspan="4" class="px-2 py-1 text-center text-gray-400">Tidak ada antrian</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        `;
+      } catch (e) {
+        statusDiv.innerHTML = `<div class="text-red-600">Gagal mengambil status antrian.</div>`;
+      }
+    }
+    document.getElementById('refreshBtn').onclick = fetchQueueStatus;
+    fetchQueueStatus();
+    setInterval(fetchQueueStatus, 5000); // auto-refresh setiap 5 detik
+  </script>
+<script>
+  let queueData = null;
+  let intervalId = null;
+
+  async function fetchQueueStatus() {
+    try {
+      const res = await fetch('/queue/status');
+      queueData = await res.json();
+      renderQueueStatus();
+      startCountdown();
+    } catch(e) {
+      document.getElementById('status-box').innerHTML = '<div class="text-red-600">Gagal mengambil status antrian.</div>';
+    }
+  }
+
+  function renderQueueStatus() {
+    // (sama seperti sebelumnya, statusDiv.innerHTML = ...)
+    // Sudah digenerate oleh kode sebelumnya
+  }
+
+  function startCountdown() {
+    if (intervalId) clearInterval(intervalId);
+    updateCountdown();
+    intervalId = setInterval(updateCountdown, 1000);
+  }
+
+  function updateCountdown() {
+    if (!queueData) return;
+    const intervalMs = Math.round(60000 / (queueData.rate_limit_per_min || 1));
+    const inFlightStart = queueData.in_flight && queueData.in_flight.started_at ? new Date(queueData.in_flight.started_at).getTime() : Date.now();
+    const countdownEls = document.querySelectorAll('.countdown');
+    countdownEls.forEach((el) => {
+      const idx = parseInt(el.getAttribute('data-idx'));
+      // Estimasi waktu kirim: waktu mulai in-flight + (idx+1)*interval
+      const estSend = inFlightStart + (idx + 1) * intervalMs;
+      const now = Date.now();
+      let sisa = Math.max(0, Math.ceil((estSend - now) / 1000));
+      el.textContent = sisa + ' detik';
+    });
+  }
+
+  fetchQueueStatus();
+  setInterval(fetchQueueStatus, 5000);
+</script>
+</body>
+</html>

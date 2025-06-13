@@ -1,0 +1,8 @@
+$table->id();
+            $table->string('sender', 255);
+            $table->string('receiver', 255);
+            $table->text('message');
+            $table->boolean('status')->default(false);
+            $table->text('error_message')->nullable();
+            $table->timestamp('sent_at')->default(now());
+            $table->timestamps();

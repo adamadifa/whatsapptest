@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daftar Grup WhatsApp</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+  <div class="bg-white rounded-lg shadow-lg p-8 w-full max-w-2xl">
+    <h1 class="text-2xl font-bold text-green-600 mb-6">Daftar Grup WhatsApp</h1>
+    <div id="group-list" class="overflow-x-auto"></div>
+    <div class="mt-8 text-gray-400 text-xs">&copy; 2025 WhatsApp Gateway</div>
+  </div>
+  <script>
+    async function fetchGroups() {
+      const res = await fetch('/groups');
+      const data = await res.json();
+      const listDiv = document.getElementById('group-list');
+      if (!data.success) {
+        listDiv.innerHTML = `<div class='text-red-600'>${data.error || 'Gagal mengambil grup.'}</div>`;
+        return;
+      }
+      if (!data.groups || data.groups.length === 0) {
+        listDiv.innerHTML = '<div class="text-gray-500">Tidak ada grup ditemukan.</div>';
+        return;
+      }
+      listDiv.innerHTML = `
+        <table class="min-w-full text-sm border border-gray-300 rounded">
+          <thead>
+            <tr class="bg-gray-100">
+              <th class="px-2 py-1 border-b text-left">ID Grup</th>
+              <th class="px-2 py-1 border-b text-left">Nama Grup</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.groups.map(g => `<tr><td class="px-2 py-1 border-b font-mono">${g.id}</td><td class="px-2 py-1 border-b">${g.name}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+    fetchGroups();
+  </script>
+</body>
+</html>

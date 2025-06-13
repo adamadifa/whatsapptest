@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WA Gateway - Dashboard All-in-One</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+  <div class="max-w-4xl mx-auto p-4 space-y-8">
+    <h1 class="text-2xl font-bold text-center text-green-700 mb-6">WhatsApp Gateway Dashboard All-in-One</h1>
+    <!-- QR Code Section -->
+    <div class="bg-white rounded shadow p-6">
+      <h2 class="text-lg font-semibold mb-2 text-green-600">Scan QR Code WhatsApp</h2>
+      <div id="qr-status" class="mb-2 text-sm text-gray-500"></div>
+      <div id="qr-container" class="flex justify-center items-center min-h-[120px]"></div>
+      <button id="btn-refresh-qr" class="mt-2 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600">Refresh QR</button>
+    </div>
+    <!-- Monitoring Section -->
+    <div class="bg-white rounded shadow p-6">
+      <h2 class="text-lg font-semibold mb-2 text-blue-600">Monitoring Queue</h2>
+      <div id="queue-status" class="mb-2 text-sm text-gray-500"></div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-xs text-left">
+          <thead class="bg-gray-200">
+            <tr>
+              <th class="px-2 py-1">#</th>
+              <th class="px-2 py-1">JID Tujuan</th>
+              <th class="px-2 py-1">Pesan</th>
+              <th class="px-2 py-1">Enqueue</th>
+              <th class="px-2 py-1">Countdown</th>
+            </tr>
+          </thead>
+          <tbody id="queue-table"></tbody>
+        </table>
+      </div>
+      <div id="inflight-message" class="mt-4 text-sm text-yellow-700"></div>
+    </div>
+    <!-- Form Test Kirim Pesan -->
+    <div class="bg-white rounded shadow p-6">
+      <h2 class="text-lg font-semibold mb-2 text-yellow-600">Test Kirim Pesan</h2>
+      <form id="send-form" class="space-y-3">
+        <div>
+          <label class="block text-sm font-medium">Nomor Tujuan (tanpa +, contoh 6281xxxx)</label>
+          <input type="text" id="to" class="mt-1 w-full border rounded px-3 py-2" required>
+        </div>
+        <div>
+          <label class="block text-sm font-medium">Pesan</label>
+          <textarea id="text" class="mt-1 w-full border rounded px-3 py-2" required></textarea>
+        </div>
+        <button type="submit" class="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600">Kirim Pesan</button>
+        <span id="send-result" class="ml-4 text-sm"></span>
+      </form>
+    </div>
+    <!-- Tabel Pesan WhatsApp dengan Filter Tanggal -->
+    <div class="bg-white rounded shadow p-6">
+      <h2 class="text-lg font-semibold mb-2 text-indigo-600">Log Pengiriman Pesan WhatsApp</h2>
+      <!-- Form Filter Tanggal -->
+      <form id="filter-form" class="flex flex-wrap gap-3 items-end mb-4">
+        <div>
+          <label class="block text-xs font-medium mb-1">Tanggal Mulai</label>
+          <input type="date" id="filter-start" class="border rounded px-2 py-1 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1">Tanggal Akhir</label>
+          <input type="date" id="filter-end" class="border rounded px-2 py-1 text-sm">
+        </div>
+        <button type="submit" class="px-3 py-1 bg-indigo-500 text-white rounded text-sm">Filter</button>
+        <button type="button" id="filter-reset" class="px-3 py-1 bg-gray-300 text-gray-800 rounded text-sm">Reset</button>
+      </form>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-xs text-left border" id="wamessages-table">
+          <thead class="bg-gray-200">
+            <tr>
+              <th class="px-2 py-1">ID</th>
+              <th class="px-2 py-1">Sender</th>
+              <th class="px-2 py-1">Receiver</th>
+              <th class="px-2 py-1">Pesan</th>
+              <th class="px-2 py-1">Status</th>
+              <th class="px-2 py-1">Error</th>
+              <th class="px-2 py-1">Waktu</th>
+            </tr>
+          </thead>
+          <tbody id="wamessages-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <script>
+    // Ganti sesuai domain API Gateway Anda
+    const API_BASE = localStorage.getItem('wa_api_base') || prompt('Masukkan URL API Gateway (misal: http://localhost:3000):', 'http://localhost:3000');
+    localStorage.setItem('wa_api_base', API_BASE);
+    const API_KEY = localStorage.getItem('wa_api_key') || prompt('Masukkan API Key WA Gateway:');
+    localStorage.setItem('wa_api_key', API_KEY);
+
+    // === QR Code ===
+    async function loadQR() {
+      try {
+        const res = await fetch(`${API_BASE}/qr/status`);
+        const data = await res.json();
+        document.getElementById('qr-status').textContent = `Status: ${data.status}`;
+        document.getElementById('qr-container').innerHTML = data.qr_svg ? data.qr_svg : '<span class="text-gray-400">Tidak ada QR tersedia.</span>';
+      } catch (e) {
+        document.getElementById('qr-status').textContent = 'Gagal mengambil QR: ' + (e.message || e);
+      }
+    }
+    loadQR();
+    document.getElementById('btn-refresh-qr').onclick = loadQR;
+
+    // === Monitoring Queue ===
+    async function loadQueue() {
+      try {
+        const res = await fetch(`${API_BASE}/queue/status`);
+        const data = await res.json();
+        document.getElementById('queue-status').textContent = `Queue: ${data.queue_length} pesan, Estimasi delay: ${data.est_delay_sec}s`;
+        const tbody = document.getElementById('queue-table');
+        tbody.innerHTML = '';
+        (data.queue_details || []).forEach((msg, i) => {
+          const countdown = Math.max(0, (i + 1) * (data.interval_ms || 1000) / 1000);
+          tbody.innerHTML += `<tr>
+            <td class="px-2 py-1">${i + 1}</td>
+            <td class="px-2 py-1">${msg.jid}</td>
+            <td class="px-2 py-1">${msg.text || ''}</td>
+            <td class="px-2 py-1">${msg.enqueued_at ? new Date(msg.enqueued_at).toLocaleTimeString() : ''}</td>
+            <td class="px-2 py-1"><span>${countdown}</span> detik</td>
+          </tr>`;
+        });
+        // In-flight message
+        if (data.in_flight) {
+          document.getElementById('inflight-message').innerHTML = `<b>In-flight:</b> ${data.in_flight.jid} - ${data.in_flight.text} (Sejak: ${data.in_flight.started_at ? new Date(data.in_flight.started_at).toLocaleTimeString() : ''})`;
+        } else {
+          document.getElementById('inflight-message').textContent = '';
+        }
+      } catch (e) {
+        document.getElementById('queue-status').textContent = 'Gagal mengambil data queue: ' + (e.message || e);
+      }
+    }
+    loadQueue();
+    setInterval(loadQueue, 3000);
+
+    // === Form Kirim Pesan ===
+    document.getElementById('send-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const to = document.getElementById('to').value.trim();
+      const text = document.getElementById('text').value.trim();
+      try {
+        const res = await fetch(`${API_BASE}/send-message`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': API_KEY
+          },
+          body: JSON.stringify({ to, text })
+        });
+        const data = await res.json();
+        document.getElementById('send-result').textContent = data.success ? `✅ Pesan dikirim (queued: ${data.queued})` : `❌ ${data.error || 'Gagal mengirim'}`;
+        if (data.success) {
+          document.getElementById('send-form').reset();
+        }
+        // Refresh log pesan setelah kirim
+        loadWAMessages();
+      } catch (e) {
+        document.getElementById('send-result').textContent = '❌ Gagal mengirim: ' + (e.message || e);
+      }
+    };
+
+    // === Log Pengiriman Pesan WhatsApp ===
+    async function loadWAMessages(start = '', end = '') {
+      try {
+        let url = `${API_BASE}/api/messages`;
+        const params = [];
+        if (start) params.push(`start=${start}`);
+        if (end) params.push(`end=${end}`);
+        if (params.length) url += '?' + params.join('&');
+        const res = await fetch(url);
+        const data = await res.json();
+        const tbody = document.getElementById('wamessages-tbody');
+        tbody.innerHTML = '';
+        data.forEach(msg => {
+          tbody.innerHTML += `<tr>
+            <td class="px-2 py-1">${msg.id}</td>
+            <td class="px-2 py-1">${msg.sender || '-'}</td>
+            <td class="px-2 py-1">${msg.receiver || '-'}</td>
+            <td class="px-2 py-1">${msg.message || ''}</td>
+            <td class="px-2 py-1">${msg.status ? '<span class=\'text-green-600\'>Berhasil</span>' : '<span class=\'text-red-600\'>Gagal</span>'}</td>
+            <td class="px-2 py-1">${msg.error_message || ''}</td>
+            <td class="px-2 py-1">${msg.sent_at ? new Date(msg.sent_at).toLocaleString() : '-'}</td>
+          </tr>`;
+        });
+      } catch (e) {
+        document.getElementById('wamessages-tbody').innerHTML = `<tr><td colspan="7">Gagal mengambil data pesan: ${e.message || e}</td></tr>`;
+      }
+    }
+
+    // Form filter tanggal
+    const filterForm = document.getElementById('filter-form');
+    const filterStart = document.getElementById('filter-start');
+    const filterEnd = document.getElementById('filter-end');
+    let filterInterval = null;
+
+    filterForm.onsubmit = function(e) {
+      e.preventDefault();
+      const start = filterStart.value;
+      const end = filterEnd.value;
+      loadWAMessages(start, end);
+      // Hentikan auto-refresh saat filter aktif
+      if (filterInterval) clearInterval(filterInterval);
+    };
+    document.getElementById('filter-reset').onclick = function() {
+      filterStart.value = '';
+      filterEnd.value = '';
+      loadWAMessages();
+      // Aktifkan kembali auto-refresh
+      if (filterInterval) clearInterval(filterInterval);
+      filterInterval = setInterval(() => loadWAMessages(), 5000);
+    };
+
+    // Load pertama kali dan auto-refresh tiap 5 detik (jika tidak sedang filter)
+    loadWAMessages();
+    filterInterval = setInterval(() => loadWAMessages(), 5000);
+
+  </script>
+</body>
+</html>

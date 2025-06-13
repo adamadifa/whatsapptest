@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp QR Gateway</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+  <div class="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center">
+    <h1 class="text-2xl font-bold mb-4 text-green-600">WhatsApp Gateway QR</h1>
+    <div id="qr-container" class="flex justify-center mb-4 min-h-[320px] items-center"></div>
+    <div id="status" class="text-lg font-semibold"></div>
+    <button onclick="window.location.reload()" class="mt-6 px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700 transition">Refresh Manual</button>
+  </div>
+  <script>
+    async function fetchQr() {
+      const r = await fetch('/qr/status');
+      const data = await r.json();
+      const qrDiv = document.getElementById('qr-container');
+      const statusDiv = document.getElementById('status');
+      if(data.status === 'qr') {
+        qrDiv.innerHTML = '<div class="flex flex-col items-center"><div>' + (data.qr_svg || '') + '</div><p class="mt-2 text-gray-700">Silakan scan QR dengan WhatsApp Anda.</p></div>';
+        statusDiv.innerHTML = '<span class="text-yellow-600">Menunggu scan QR...</span>';
+      } else if(data.status === 'connected') {
+        qrDiv.innerHTML = '<svg class="mx-auto mb-2" width="64" height="64" fill="none" viewBox="0 0 24 24" stroke="green"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>';
+        statusDiv.innerHTML = '<span class="text-green-600">WhatsApp terkoneksi!</span>';
+      } else if(data.status === 'connecting') {
+        qrDiv.innerHTML = '<div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-green-600 mx-auto"></div>';
+        statusDiv.innerHTML = '<span class="text-gray-500">Menghubungkan ke WhatsApp...</span>';
+      } else {
+        qrDiv.innerHTML = '<span class="text-red-600">Koneksi terputus. Menunggu reconnect...</span>';
+        statusDiv.innerHTML = '';
+      }
+    }
+    fetchQr();
+    setInterval(fetchQr, 3000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+$url = "http://localhost:3000/send-message"; // Ganti dengan URL gateway Anda
+$apiKey = "supersecretapikey123"; // Ganti dengan API key Anda
+
+$data = [
+    "to" => "089670444321", // Nomor tujuan (bisa 08xxx atau 62xxx)
+    "text" => "Halo, ini pesan dari PHP!"
+];
+
+$ch = curl_init($url);
+curl_setopt($ch, CURLOPT_POST, 1);
+curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_HTTPHEADER, [
+    "Content-Type: application/json",
+    "x-api-key: $apiKey"
+]);
+
+$response = curl_exec($ch);
+$httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
