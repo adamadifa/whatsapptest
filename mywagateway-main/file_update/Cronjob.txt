@@ -1,1 +1,0 @@
-curl -fsS https://wa.adamadifa.site/healthz > /dev/null
