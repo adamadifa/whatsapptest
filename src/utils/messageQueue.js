@@ -23,23 +23,61 @@ const RATE_LIMIT_PER_MIN = parseInt(process.env.RATE_LIMIT_PER_MIN || '10');
 const INTERVAL_MS = Math.ceil(60000 / RATE_LIMIT_PER_MIN); // ms antar pesan
 
 const queue = [];
+
+// Fungsi untuk flush queue saat QR scan ulang (logout/login ulang)
+async function flushQueue() {
+  while (queue.length > 0) {
+    const queueItem = queue.shift();
+    const { message } = queueItem;
+    try {
+      await saveMessage({
+        sender: message.sender || '-',
+        receiver: message.jid,
+        message: message.text,
+        status: false,
+        error_message: 'Session changed / QR scanned ulang'
+      });
+    } catch (err) {
+      logger.error('[QUEUE] Gagal mencatat flush queue:', err.message);
+    }
+  }
+  pendingSend = false;
+  inFlightMessage = null;
+  isWorkerActive = false;
+  logger.warn('[QUEUE] Queue di-flush karena QR scan ulang/session berubah.');
+}
+
 let isWorkerActive = false;
 let lastSentAt = 0;
 let pendingSend = false;
 let inFlightMessage = null;
 
+function resetWorkerState() {
+  pendingSend = false;
+  inFlightMessage = null;
+  isWorkerActive = false;
+}
+
+
 // Fungsi untuk enqueue pesan
+const QUEUE_LIMIT = 1000; // batas maksimal antrian
+
 function enqueueMessage(message, sendFunc, callback) {
+  if (queue.length >= QUEUE_LIMIT) {
+    logger.error(`[QUEUE] Queue penuh (${QUEUE_LIMIT}), pesan dari ${message.sender || '-'} ke ${message.jid} ditolak.`);
+    if (callback) callback(new Error('Queue penuh, silakan coba lagi nanti.'));
+    return;
+  }
   queue.push({
     message: {
       jid: message.jid,
       text: message.text,
       enqueued_at: new Date().toISOString(),
-      sender: message.sender || '-' // Tambahkan sender ke queue, default '-'
+      sender: message.sender || '-'
     },
     sendFunc,
     callback,
-    retryCount: 0 // Tambahan retry counter
+    retryCount: 0
   });
   startWorker();
 }
@@ -76,31 +114,22 @@ function processQueue() {
     inFlightMessage = null;
     return;
   }
-  // Cek status koneksi WhatsApp sebelum kirim
-  let connectionStatus = 'disconnected';
+  // Cek status kesiapan gateway (termasuk warm-up) sebelum kirim
+  let gatewayReady = false;
   try {
-    const { getStatus } = require('../gateway');
-    if (getStatus) connectionStatus = getStatus();
+    const { isReady } = require('../gateway');
+    if (isReady) gatewayReady = isReady();
   } catch (e) {
-    connectionStatus = 'disconnected';
+    gatewayReady = false;
   }
-  if (connectionStatus !== 'connected') {
-    logger.warn(`[QUEUE] WhatsApp not connected. Waiting before sending. Status: ${connectionStatus}`);
-
-    logger.warn(`[QUEUE] WhatsApp not connected. Waiting before sending. Status: ${connectionStatus}`);
-    // Jangan hapus dari queue, worker coba lagi 5 detik lagi
-    setTimeout(processQueue, 5000);
+  if (!gatewayReady) {
+    logger.warn('[QUEUE] Gateway not ready (connecting or in warm-up). Waiting before sending.');
+    // Jangan keluarkan item dari queue, worker akan coba lagi 5 detik lagi
+    isWorkerActive = false;
+    setTimeout(() => startWorker(), 5000);
     return;
   }
-  if (connectionStatus === 'open') {
-    // Reset worker status agar worker queue aktif ulang
-    try {
-      const { resetWorkerStatus } = require('./utils/messageQueue');
-      resetWorkerStatus && resetWorkerStatus();
-    } catch (e) {
-      logger.warn('Failed to reset message queue worker status:', e.message);
-    }
-  }
+  // Koneksi sudah siap, pastikan sock benar-benar siap sebelum shift queue
   const queueItem = queue.shift();
   if (!queueItem) {
     logger.warn('[QUEUE] Tidak ada item di queue saat akan proses.');
@@ -131,22 +160,43 @@ function processQueue() {
       setTimeout(processQueue, 5000);
       return;
     }
+    // Perkuat readiness sock
     if (!sock || !sock.user) {
-      logger.warn('[QUEUE] Socket WhatsApp belum siap, akan retry 1 detik. Detail sock:', JSON.stringify(sock));
+      logger.warn('[QUEUE] Sock belum siap: sock.user belum ada. Menunggu 5 detik sebelum retry. Detail sock:', JSON.stringify(sock));
       pendingSend = false;
       inFlightMessage = null;
-      setTimeout(processQueue, 1000);
+      setTimeout(processQueue, 5000);
       return;
     }
+    if (typeof sock.state === 'string' && sock.state !== 'open') {
+      logger.warn('[QUEUE] Sock.state belum open (state=' + sock.state + '). Menunggu 2 detik sebelum retry.');
+      pendingSend = false;
+      inFlightMessage = null;
+      setTimeout(processQueue, 2000);
+      return;
+    }
+    logger.info('[QUEUE] Sock siap, detail:', JSON.stringify({ user: sock.user, state: sock.state }));
 
     // Bungkus sendFunc dengan timeout 10 detik
     withTimeout(sendFunc(message), 10000, () => {
       logger.error(`[QUEUE] Timeout kirim pesan ke ${message.jid}`);
     })
-      .then((result) => {
+      .then(async (result) => {
         logger.info(`[QUEUE] Pesan ke ${message.jid} berhasil dikirim.`);
         pendingSend = false;
         inFlightMessage = null;
+        // Catat pesan sukses ke database
+        try {
+          await saveMessageWithRetry({
+            sender: message.sender || '-',
+            receiver: message.jid,
+            message: message.text,
+            status: true,
+            error_message: null
+          });
+        } catch (dbErr) {
+          logger.error('[QUEUE] Gagal menyimpan pesan sukses ke database:', dbErr.message);
+        }
         try {
           callback && callback(null, result);
         } catch (e) {
@@ -156,25 +206,42 @@ function processQueue() {
       })
       .catch(async (err) => {
         logger.error(`[QUEUE] Gagal mengirim pesan ke ${message.jid}:`, err && err.message, `Retry ke-${retryCount + 1}`);
-        // Jika error karena connection closed, retry lebih lama
-        let retryDelay = 0;
-        if (err && err.message && err.message.toLowerCase().includes('connection closed')) {
-          logger.warn('[QUEUE] Gagal karena Connection Closed, retry 10 detik.');
-          retryDelay = 10000;
+        if (err && err.stack) {
+          logger.error(`[QUEUE] Detail error stack:`, err.stack);
         }
+        logger.error(`[QUEUE] Detail error objek:`, JSON.stringify(err, Object.getOwnPropertyNames(err)));
+
         pendingSend = false;
         inFlightMessage = null;
-        if (retryCount < 5) {
-          queue.push({ ...queueItem, retryCount: retryCount + 1 });
-          logger.warn(`[QUEUE] Pesan ke ${message.jid} akan dicoba ulang (retry ke-${retryCount + 1}).`);
-          if (retryDelay > 0) {
-            setTimeout(processQueue, retryDelay);
-            return;
+
+        // Logika Smart Retry
+        let retryDelay = 5000; // Default retry delay 5 detik
+        if (err && err.message && err.message.toLowerCase().includes('connection closed')) {
+          const ts = new Date().toISOString();
+          // Jika ini adalah kegagalan pertama (retryCount 0), anggap sebagai 'hiccup' dan coba lagi dengan cepat.
+          if (retryCount === 0) {
+            logger.warn(`[QUEUE] Gagal karena Connection Closed pada percobaan pertama. Melakukan retry cepat dalam 2 detik. [${ts}]`);
+            retryDelay = 2000; // Retry cepat 2 detik
+          } else {
+            // Jika masih gagal pada percobaan berikutnya, berarti ada masalah serius. Gunakan delay panjang.
+            logger.warn(`[QUEUE] Gagal lagi karena Connection Closed. Menggunakan retry standar 15 detik. [${ts}]`);
+            retryDelay = 15000; // Retry standar 15 detik
           }
+        }
+
+        isWorkerActive = false; // PENTING: Reset status worker agar bisa jalan lagi
+
+        const newRetryCount = retryCount + 1;
+        if (newRetryCount < 5) {
+          // Retry error lain (bukan connection closed)
+          queue.unshift({ ...queueItem, retryCount: newRetryCount });
+          logger.warn(`[QUEUE] Pesan ke ${message.jid} akan dicoba ulang (retry ke-${newRetryCount}) dalam ${retryDelay / 1000} detik.`);
+          setTimeout(() => startWorker(), retryDelay);
+          return;
         } else {
           logger.error(`[QUEUE] Pesan ke ${message.jid} gagal dikirim setelah 5x percobaan. Pesan: ${message.text}`);
           try {
-            await saveMessage({
+            await saveMessageWithRetry({
               sender: message.sender || '-',
               receiver: message.jid,
               message: message.text,
@@ -202,6 +269,21 @@ function getQueueLength() {
 
 function resetWorkerStatus() {
   isWorkerActive = false;
+}
+
+// Helper retry untuk saveMessage
+async function saveMessageWithRetry(data, retry = 0) {
+  try {
+    await saveMessage(data);
+  } catch (dbErr) {
+    logger.error(`[QUEUE] Gagal menyimpan pesan ke DB (attempt ${retry + 1}):`, dbErr.message);
+    if (retry < 2) {
+      await new Promise(res => setTimeout(res, 1000));
+      return saveMessageWithRetry(data, retry + 1);
+    } else {
+      logger.error('[QUEUE] saveMessage gagal setelah 3x percobaan, data:', JSON.stringify(data));
+    }
+  }
 }
 
 module.exports = {

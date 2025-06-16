@@ -1,145 +1,123 @@
-const makeWASocket = require('@whiskeysockets/baileys').default;
-const { useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const { logger } = require('./utils/logger');
-const config = require('../config/default');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const path = require('path');
+const fs = require('fs');
+const { logger } = require('./utils/logger');
+const config = require('../config/default.js');
 const { startWorker } = require('./utils/messageQueue');
+const { messageHandler } = require('./handlers/messageHandler');
 
 let sock;
-let lastQr = null; // Simpan QR code terakhir
-let connectionStatus = 'connecting'; // Status: 'connecting', 'qr', 'connected', 'disconnected'
-let heartbeatInterval = null; // Simpan interval heartbeat
-let reconnectAttempts = 0; // Untuk exponential backoff reconnect
+let lastQr = null;
+let connectionStatus = 'connecting';
+let reconnectAttempts = 0;
+let isGatewayReady = false;
 
 function getLastQr() {
   return lastQr;
-}
-
-function getStatus() {
-  // Status: 'qr', 'connected', 'connecting', 'disconnected'
-  if (lastQr) return 'qr';
-  return connectionStatus;
-}
-
-async function startGateway() {
-  const { state, saveCreds } = await useMultiFileAuthState(path.resolve(config.sessionPath));
-  sock = makeWASocket({
-    auth: state,
-    // printQRInTerminal sudah deprecated, hapus!
-    logger,
-    syncFullHistory: false,
-    markOnlineOnConnect: false,
-    generateHighQualityLinkPreview: false,
-  });
-
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      lastQr = qr; // Simpan QR code terbaru
-      connectionStatus = 'qr';
-      logger.info('QR code updated and available via /qr endpoint');
-      try {
-        require('qrcode-terminal').generate(qr, { small: true });
-        logger.info(qr);
-      } catch (e) {
-        logger.info(qr);
-      }
-    }
-    if (connection === 'open') {
-      lastQr = null; // Reset QR jika sudah login
-      connectionStatus = 'connected';
-      logger.info('WhatsApp connection established.');
-      // Trigger worker to process message queue immediately after reconnect
-      try {
-        startWorker && startWorker();
-      } catch (e) {
-        logger.warn('Failed to trigger message queue worker:', e.message);
-      }
-      // Mulai heartbeat baru, clear sebelumnya
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
-      heartbeatInterval = setInterval(() => {
-        try {
-          if (sock?.user) {
-            sock.sendPresenceUpdate('available');
-            logger.debug('Heartbeat: Presence update sent.');
-          }
-        } catch (e) {
-          logger.warn('Heartbeat error (ignored):', e.message);
-        }
-      }, 1000 * 60 * 1); // setiap 1 menit
-    }
-    if (connection === 'close') {
-      connectionStatus = 'disconnected';
-      // Bersihkan heartbeat agar tidak error pada socket lama
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-        heartbeatInterval = null;
-      }
-      // Jika logout, hapus session dan restart agar QR baru muncul
-      const isLoggedOut = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut;
-      logger.error('Connection closed detail:', {
-        reason: lastDisconnect?.error?.output?.statusCode,
-        error: lastDisconnect?.error,
-        isLoggedOut,
-        reconnectAttempts
-      });
-      if (isLoggedOut) {
-        logger.warn('Logged out detected. Removing session and restarting for new QR.');
-        const fs = require('fs');
-        const sessionPath = path.resolve(config.sessionPath);
-        if (fs.existsSync(sessionPath)) {
-          fs.rmSync(sessionPath, { recursive: true, force: true });
-        }
-        reconnectAttempts = 0;
-        setTimeout(startGateway, 1000); // restart koneksi agar QR baru muncul
-        connectionStatus = 'connecting';
-        return;
-      }
-      const shouldReconnect = !isLoggedOut;
-      logger.warn('Connection closed. Reconnecting: ' + shouldReconnect);
-      if (shouldReconnect) {
-        // Exponential backoff: 5s, 15s, 30s, 60s, 120s (maks 2 menit)
-        reconnectAttempts = Math.min(reconnectAttempts + 1, 5);
-        const backoff = [5000, 15000, 30000, 60000, 120000][reconnectAttempts - 1];
-        logger.warn(`Reconnect attempt #${reconnectAttempts}, waiting ${backoff / 1000}s...`);
-        setTimeout(startGateway, backoff);
-        connectionStatus = 'connecting';
-      } else {
-        reconnectAttempts = 0;
-      }
-    }
-  });
-
-  // Message handler
-  const { messageHandler } = require('./handlers/messageHandler');
-  sock.ev.on('messages.upsert', messageHandler(sock));
 }
 
 function getSocket() {
   return sock;
 }
 
-// Global error handler agar proses tidak crash
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  if (reason && reason.stack) {
-    logger.error('Stack:', reason.stack);
-    console.error('Unhandled Rejection Stack:', reason.stack);
-  } else {
-    console.error('Unhandled Rejection:', reason);
-  }
-});
-process.on('uncaughtException', (err) => {
-  logger.error('Uncaught Exception thrown:', err);
-  if (err && err.stack) {
-    logger.error('Stack:', err.stack);
-    console.error('Uncaught Exception Stack:', err.stack);
-  } else {
-    console.error('Uncaught Exception:', err);
-  }
-});
+function isReady() {
+  return isGatewayReady;
+}
 
-module.exports = { startGateway, getSocket, getLastQr, getStatus };
+function getStatus() {
+  if (lastQr) return 'qr';
+  return connectionStatus;
+}
+
+async function startGateway() {
+  const sessionPath = path.resolve(__dirname, '..', 'sessions');
+  logger.info(`[GATEWAY] Using session path: ${sessionPath}`);
+
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+
+    sock = makeWASocket({
+      auth: state,
+      logger,
+      browser: Browsers.ubuntu('Chrome'),
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+    });
+
+    // --- Event Handlers ---
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
+      if (qr) {
+        lastQr = qr;
+        connectionStatus = 'qr';
+        logger.info('QR code received, please scan.');
+      }
+
+      // Log error WhatsApp jika ada
+      if (update?.lastDisconnect?.error) {
+        const err = update.lastDisconnect.error;
+        logger.error('[GATEWAY] WhatsApp disconnect error:', err && (err.stack || err.message || JSON.stringify(err)));
+      }
+
+      if (connection === 'open') {
+        reconnectAttempts = 0;
+        lastQr = null;
+        connectionStatus = 'connected';
+        isGatewayReady = false;
+        logger.info('WhatsApp connection established. Starting 10-second warm-up period...');
+
+        setTimeout(() => {
+          logger.info('[GATEWAY] Warm-up finished. Gateway is ready.');
+          isGatewayReady = true;
+          if (typeof startWorker === 'function') {
+            startWorker();
+          }
+        }, 10000); // 10-second warm-up
+      }
+
+      if (connection === 'close') {
+        isGatewayReady = false;
+        connectionStatus = 'disconnected';
+        const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        logger.warn(`Connection closed. Reason: ${lastDisconnect.error?.output?.statusCode}. Reconnecting: ${shouldReconnect}`);
+
+        if (shouldReconnect) {
+          reconnectAttempts++;
+          const delay = Math.pow(2, reconnectAttempts - 1) * 5000;
+          logger.info(`Reconnect attempt #${reconnectAttempts}, waiting ${delay / 1000}s...`);
+
+          // Proteksi: Jika gagal reconnect lebih dari 5x, anggap session corrupt, flush session dan restart
+          if (reconnectAttempts >= 5) {
+            logger.error('[GATEWAY] Gagal reconnect lebih dari 5x. Kemungkinan session corrupt. Flushing session folder dan restart gateway.');
+            if (fs.existsSync(sessionPath)) {
+              fs.rmSync(sessionPath, { recursive: true, force: true });
+            }
+            process.exit(1);
+          } else {
+            setTimeout(startGateway, delay);
+          }
+        } else {
+          logger.error('Not reconnecting. Session may be invalid. Clearing session and exiting.');
+          if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+          }
+          process.exit(1); // Exit to allow process manager to restart and generate new QR
+        }
+      }
+    });
+
+    sock.ev.on('messages.upsert', messageHandler(sock));
+
+  } catch (error) {
+    logger.error('[GATEWAY] Failed to start gateway:', error);
+    process.exit(1);
+  }
+}
+
+module.exports = { startGateway, getSocket, getLastQr, getStatus, isReady };
+
 
 

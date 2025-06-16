@@ -78,22 +78,12 @@ async function sendMessageHandler(req, res) {
     try { pendingSend = messageQueue.__getPendingSend ? messageQueue.__getPendingSend() : false; } catch (e) { }
     // Jika posisi pertama dan tidak ada pendingSend, queued: false
     const queued = !(queuePos === 0 && !pendingSend);
-    enqueueMessage({ jid, text }, sendFunc, async (err) => {
+    enqueueMessage({ jid, text, sender }, sendFunc, (err) => {
+      // Callback ini hanya untuk error pada proses queue, tidak perlu saveMessage di sini
       if (err) {
-        logger.error('Send message (queue) error:', err);
-        status = false;
-        error_message = err && (err.message || err.toString());
-      } else {
-        status = true;
+        logger.error('Enqueue message error:', err);
+        // Tidak perlu saveMessage di sini untuk menghindari duplikat
       }
-      // Simpan ke database setelah proses
-      await saveMessage({
-        sender,
-        receiver: jid,
-        message: text,
-        status,
-        error_message
-      });
     });
     const estDelay = Math.round((queuePos + 1) * INTERVAL_MS / 1000); // detik
     res.json({ success: true, queued, queue_position: queuePos + 1, est_delay_sec: estDelay });
@@ -101,7 +91,7 @@ async function sendMessageHandler(req, res) {
     logger.error('Send message error:', err);
     status = false;
     error_message = err && (err.message || err.toString());
-    // Simpan ke database jika error sebelum enqueue
+    // Simpan ke database hanya jika error sebelum enqueue
     await saveMessage({
       sender,
       receiver: jid,

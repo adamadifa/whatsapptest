@@ -7,9 +7,14 @@ const config = require('../../config/default');
 const logDir = path.resolve(__dirname, '../../logs');
 if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
 
-const stream = fs.createWriteStream(path.join(logDir, 'gateway.log'), { flags: 'a' });
+const fileStream = fs.createWriteStream(path.join(logDir, 'gateway.log'), { flags: 'a' });
+
+// Multi-stream: ke file dan ke terminal
 const logger = pino({
   level: config.logLevel || 'info',
-}, stream);
+}, pino.multistream([
+  { stream: process.stdout }, // ke terminal
+  { stream: fileStream }      // ke file
+]));
 
 module.exports = { logger };
